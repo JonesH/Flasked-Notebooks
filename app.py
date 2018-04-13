@@ -3,9 +3,10 @@
 
 import os
 import forms
+import nbformat
+
 from glob import glob
 from os.path import basename
-import IPython.nbformat.current as nbf
 from run_ipynb import convert_nb_html, inject_params
 from flask import Flask, request, render_template, abort, g
 
@@ -29,7 +30,7 @@ def adder():
     Inject input parameters to the adder notebook before rendering
     """
     if request.method == 'POST':
-        notebook = nbf.read(open('notebooks/adder.ipynb', 'r'), 'ipynb')
+        notebook = nbformat.read('notebooks/adder.ipynb', 4)  # nbformat.NO_CONVERT)
         notebook = inject_params(request.form, notebook)
         html_notebook = convert_nb_html(notebook)
         return render_template('notebook.html', content=html_notebook)
@@ -44,12 +45,12 @@ def notebook(notebook):
     Dynamically render IPython Notebook
     """
     try:
-        notebook = nbf.read(open('notebooks/%s' % notebook, 'r'), 'ipynb')
+        notebook = nbformat.read(f'notebooks/{notebook}', 4)  # nbformat.NO_CONVERT)
     except IOError:
         abort(418)
     html_notebook = convert_nb_html(notebook)
     return render_template('notebook.html', content=html_notebook)
 
 
-if __name__ == "__main__":
-    app.run(debug=True)
+#if __name__ == "__main__":
+#    app.run(debug=True)

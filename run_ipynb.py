@@ -1,76 +1,114 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*
-
 """
 Given an IPython Notebook JSON object, run all code cells, replace
 output cell with updated output and return the HTLM representation
 
 Adapted from: https://gist.github.com/minrk/2620735
 """
-
-from Queue import Empty
-from BeautifulSoup import BeautifulSoup
-from IPython.config import Config
-from IPython.nbconvert import HTMLExporter
-from IPython.nbformat.current import NotebookNode
-try:
-    from IPython.kernel import KernelManager
-except ImportError:
-    from IPython.zmq.blockingkernelmanager import BlockingKernelManager as KernelManager
+import json
+from queue import Empty
+from bs4 import BeautifulSoup
+from traitlets.config import Config
+from nbconvert import HTMLExporter
+from nbformat import NotebookNode
+from jupyter_client import KernelManager
+from pprint import pprint
 
 
-def run_cell(shell, iopub, cell, timeout=60):
-
-    shell.execute(cell.input)
+def run_cell(kc, cell, timeout=60):
+    #iopub.get_msgs()
     # wait for finish
-    shell.get_msg(timeout=timeout)
+    kc.allow_stdin = False
+    reply = kc.execute(code=cell.source, reply=True, timeout=timeout)
+    pprint(f'execute {cell.source}!')
+    pprint(reply['msg_type'])
+    pprint(reply['content'])
+
+    assert not kc.allow_stdin
     outs = []
+    msgs = kc.iopub_channel.get_msgs()
 
-    while True:
-        try:
-            msg = iopub.get_msg(timeout=0.2)
-        except Empty:
-            break
-        msg_type = msg['msg_type']
-        if msg_type in ('status', 'pyin'):
-            continue
-        elif msg_type == 'clear_output':
-            outs = []
-            continue
+    for msg in msgs:
+        pprint(msg['msg_type'])
+        pprint(msg['content'])
 
-        content = msg['content']
+    return msgs
 
-        out = NotebookNode(output_type=msg_type)
+    # while True:
+    #     try:
+    #
+    #     except Empty:
+    #         break
+    #     msg_type = msg['msg_type']
+    #     pprint(msg_type)
+    #     if msg_type in ('status', 'pyin', 'execute_input'):
+    #         #if msg_type not in ('stream', 'display_data', 'pyout'):
+    #         continue
+    #     elif msg_type == 'clear_output':
+    #         outs = []
+    #         continue
+    #
+    #     content = msg['content']
+    #
+    #     out = NotebookNode(output_type=msg_type)
+    #
+    #     if msg_type == 'stream':
+    #         out.stream = content['name']
+    #         out.text = content['text']
+    #     elif msg_type in ('display_data', 'pyout'):
+    #         out['metadata'] = content['metadata']
+    #         for mime, data in content['data'].items():
+    #             attr = mime.split('/')[-1].lower()
+    #             # this gets most right, but fix svg+html, plain
+    #             attr = attr.replace('+xml', '').replace('plain', 'text')
+    #             setattr(out, attr, data)
+    #         if msg_type == 'pyout':
+    #             out.prompt_number = content['execution_count']
+    #     elif msg_type == 'pyerr':
+    #         out.ename = content['ename']
+    #         out.evalue = content['evalue']
+    #         out.traceback = content['traceback']
+    #     else:
+    #         print("unhandled iopub msg:", msg_type)
+    #
+    #     outs.append(out)
+    #
+    # return outs
 
-        if msg_type == 'stream':
-            out.stream = content['name']
-            out.text = content['data']
-        elif msg_type in ('display_data', 'pyout'):
-            out['metadata'] = content['metadata']
-            for mime, data in content['data'].iteritems():
-                attr = mime.split('/')[-1].lower()
-                # this gets most right, but fix svg+html, plain
-                attr = attr.replace('+xml', '').replace('plain', 'text')
-                setattr(out, attr, data)
-            if msg_type == 'pyout':
-                out.prompt_number = content['execution_count']
-        elif msg_type == 'pyerr':
-            out.ename = content['ename']
-            out.evalue = content['evalue']
-            out.traceback = content['traceback']
-        else:
-            print "unhandled iopub msg:", msg_type
 
-        outs.append(out)
+kernelconf = '/home/jones/.local/share/jupyter/kernels/flasked-notebook/kernel.json'
 
-    return outs
+
+def check_kernel(kc):
+    shell = kc.shell_channel
+    iopub = kc.iopub_channel
+    heart = kc.hb_channel
+    stdin = kc.stdin_channel
+
+    print(f'checking shell alive: {shell.is_alive()}')
+    print(f'checking iopub alive: {iopub.is_alive()}')
+    print(f'checking heart alive: {heart.is_alive()}')
+    print(f'checking stdin alive: {stdin.is_alive()}')
+
+
+def start_kernel(config=kernelconf):
+
+    kernelconfig = Config(json.loads(open(kernelconf).read()))
+    km = KernelManager(config=kernelconfig)
+    km.start_kernel(extra_arguments=['--pylab=inline'])
+    kc = km.client()
+    kc.start_channels()
+    return kc
 
 
 def run_notebook(nb):
     """
     Run each code cell in a given notebook and update with the new output
     """
-    km = KernelManager()
+    kernelconf = '/home/jones/.local/share/jupyter/kernels/flasked-notebook/kernel.json'
+    kernelconfig = Config(json.loads(open(kernelconf).read()))
+    km = KernelManager(config=kernelconfig)
     km.start_kernel(extra_arguments=['--pylab=inline'])
     try:
         kc = km.client()
@@ -81,24 +119,22 @@ def run_notebook(nb):
         kc = km
         kc.start_channels()
         iopub = kc.sub_channel
-    shell = kc.shell_channel
 
-    shell.execute("pass")
-    shell.get_msg()
+    reply = kc.execute("pass", reply=False)
     while True:
         try:
-            iopub.get_msg(timeout=1)
+            msg = iopub.get_msg(timeout=1)
         except Empty:
             break
 
-    for ws in nb.worksheets:
-        for cell in ws.cells:
-            if cell.cell_type != 'code':
-                continue
-            try:
-                cell.outputs = run_cell(shell, iopub, cell)
-            except Exception as e:
-                return -1
+    code_cells = [cell for cell in nb.cells if cell.cell_type == 'code']
+
+    for cell in code_cells:
+        try:
+            cell.outputs = run_cell(kc, cell)
+        except Exception as e:
+            print(e)
+            raise e
 
     kc.stop_channels()
     km.shutdown_kernel()
@@ -110,12 +146,11 @@ def inject_params(params, nb):
     """
     Inject key/value pairs into a notebook
     """
-    inject = '\n'.join(['\n%s = %s' % (k, params[k]) for k in params])
+    inject = '\n'.join([f'\n{k} = {params[k]}' for k in params])
 
-    for ws in nb.worksheets:
-        for cell in ws.cells:
-            if cell.cell_type == 'code':
-                cell.input += inject
+    for cell in nb.cells:
+        if cell.cell_type == 'code':
+            cell.source += inject
     return nb
 
 
